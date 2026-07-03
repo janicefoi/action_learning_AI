@@ -5,3 +5,4 @@ __pycache__/
 uploads/
 # sentence-transformers model cache
 .cache/
+venv/
