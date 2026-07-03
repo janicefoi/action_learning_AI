@@ -4,7 +4,6 @@ from typing import Optional
 from document_parser import extract_text
 from schemas import CheckResult, ComplianceReport
 
-DEFAULT_HEADINGS = ["Problem", "Action", "Reflection", "Learning"]
 GLOBALLY_ALLOWED = {"PDF", "DOCX"}
 
 
@@ -127,11 +126,11 @@ def _check_word_count(text: str, min_wc: int, max_wc: int) -> CheckResult:
 
 
 def _check_headings(text: str, required_headings: Optional[str]) -> CheckResult:
-    required = (
-        [h.strip() for h in required_headings.split(",") if h.strip()]
-        if required_headings
-        else DEFAULT_HEADINGS
-    )
+    if not required_headings:
+        return _skipped("Required Sections", "No required sections set for this assignment.")
+    required = [h.strip() for h in required_headings.split(",") if h.strip()]
+    if not required:
+        return _skipped("Required Sections", "No required sections set for this assignment.")
     lower = text.lower()
     missing = [h for h in required if h.lower() not in lower]
     required_str = ", ".join(required)
