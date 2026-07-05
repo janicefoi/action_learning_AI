@@ -11,5 +11,10 @@ def extract_text(contents: bytes, file_type: str) -> str:
             return "\n".join(pages)
     elif file_type == "DOCX":
         doc = Document(io.BytesIO(contents))
-        return "\n".join(para.text for para in doc.paragraphs)
+        parts = [para.text for para in doc.paragraphs]
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    parts.append(cell.text)
+        return "\n".join(parts)
     return ""

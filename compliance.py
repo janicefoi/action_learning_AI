@@ -1,10 +1,13 @@
+import difflib
 import re
-from typing import Optional
+from typing import List, Optional
 
 from document_parser import extract_text
 from schemas import CheckResult, ComplianceReport
+from text_cleaner import extract_sections
 
 GLOBALLY_ALLOWED = {"PDF", "DOCX"}
+_THIN_THRESHOLD = 20  # words — a section with fewer words than this is flagged as thin
 
 
 def check_document(
@@ -131,16 +134,139 @@ def _check_headings(text: str, required_headings: Optional[str]) -> CheckResult:
     required = [h.strip() for h in required_headings.split(",") if h.strip()]
     if not required:
         return _skipped("Required Sections", "No required sections set for this assignment.")
-    lower = text.lower()
-    missing = [h for h in required if h.lower() not in lower]
-    required_str = ", ".join(required)
-    if missing:
-        return _fail(
+
+    missing: List[str] = []
+    empty: List[str] = []
+    thin: List[str] = []
+
+    # Extract all section word counts in one pass for correct boundaries
+    found = [h for h in required if _heading_present(h, text)]
+    missing = [h for h in required if h not in found]
+    word_counts = _section_word_counts(found, text) if found else {}
+
+    for heading in found:
+        wc = word_counts.get(heading, 0)
+        if wc == 0:
+            empty.append(heading)
+        elif wc < _THIN_THRESHOLD:
+            thin.append(f"{heading} ({wc} word{'s' if wc != 1 else ''})")
+
+    if not missing and not empty and not thin:
+        return _pass(
             "Required Sections",
-            f"Missing required section(s): {', '.join(missing)}.",
-            f"Required: {required_str}",
+            f"All required sections found: {', '.join(required)}.",
+            None,
         )
-    return _pass("Required Sections", f"All required sections found: {required_str}.", None)
+
+    summary_parts: List[str] = []
+    if missing:
+        summary_parts.append(f"{len(missing)} missing")
+    if empty:
+        summary_parts.append(f"{len(empty)} empty")
+    if thin:
+        summary_parts.append(f"{len(thin)} thin")
+
+    detail_parts: List[str] = []
+    if missing:
+        detail_parts.append(f"Missing: {', '.join(missing)}")
+    if empty:
+        detail_parts.append(f"Empty (heading found, no content): {', '.join(empty)}")
+    if thin:
+        detail_parts.append(f"Thin (under {_THIN_THRESHOLD} words): {', '.join(thin)}")
+
+    return _fail(
+        "Required Sections",
+        f"Section issues — {', '.join(summary_parts)}.",
+        " | ".join(detail_parts),
+    )
+
+
+def _find_actual_heading(heading: str, text: str) -> Optional[str]:
+    """Return the candidate line from the document that fuzzy-matches the required heading."""
+    h = heading.lower()
+    for candidate in _candidate_headings(text):
+        c = candidate.lower()
+        if c == h or c.startswith(h) or h.startswith(c):
+            return candidate
+        if len(c) >= 2 and difflib.SequenceMatcher(None, h, c).ratio() >= 0.75:
+            return candidate
+    return None
+
+
+def _section_word_counts(required: List[str], text: str) -> dict:
+    """
+    Extract all required sections in a single pass so boundaries between them
+    are correct (each section ends where the next one starts).
+
+    Returns {required_heading: word_count}.  Headings not found in the
+    document map to 0.
+    """
+    # Resolve each required heading to its actual form in the document
+    actual_for: dict = {}  # required → actual
+    for h in required:
+        actual_for[h] = _find_actual_heading(h, text) or h
+
+    # One call with all resolved headings — correct section boundaries
+    all_sections = extract_sections(text, list(actual_for.values()))
+
+    result = {}
+    for req_h, actual_h in actual_for.items():
+        content = all_sections.get(actual_h, "")
+        result[req_h] = len(content.split()) if content.strip() else 0
+    return result
+
+
+def _heading_present(heading: str, text: str) -> bool:
+    """
+    Three-pass check (most → least strict):
+
+    1. Exact line match  — heading fills the whole line, optional numbering
+       e.g. "3. Abstract:" or "Methodology"
+    2. Line-start match  — heading begins a line (catches headings that run
+       into content on the same line after PDF/DOCX extraction)
+    3. Fuzzy line match  — compares the required heading against every
+       short line in the document using prefix containment and
+       SequenceMatcher similarity (≥ 0.75).  Handles:
+         • capitalisation variants  ("ABSTRACT" → "Abstract")
+         • abbreviations            ("Intro"    → "Introduction")
+         • trailing words           ("Method"   → "Methodology")
+         • minor typos              ("Conclsion"→ "Conclusion")
+    """
+    escaped = re.escape(heading)
+    if re.search(rf"(?im)^[ \t]*(?:\d+[\.\)]\s*)?{escaped}\s*[:\-]?\s*$", text):
+        return True
+    if re.search(rf"(?im)^[ \t]*(?:\d+[\.\)]\s*)?{escaped}\b", text):
+        return True
+    return _fuzzy_match(heading, text)
+
+
+_HEADING_LINE_RE = re.compile(r"^\d+[\.\)]\s*")  # strip leading "1. " / "2) "
+
+def _candidate_headings(text: str) -> List[str]:
+    """
+    Return every short line that could plausibly be a section heading.
+    Strips leading numbers and trailing punctuation before returning.
+    """
+    candidates = []
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        clean = _HEADING_LINE_RE.sub("", stripped).rstrip(":- \t")
+        if 2 <= len(clean) <= 80:
+            candidates.append(clean)
+    return candidates
+
+
+def _fuzzy_match(heading: str, text: str) -> bool:
+    h = heading.lower()
+    for candidate in _candidate_headings(text):
+        c = candidate.lower()
+        # Prefix in either direction: "Method" ↔ "Methodology", "Intro" ↔ "Introduction"
+        if c.startswith(h) or h.startswith(c):
+            return True
+        # Edit-distance similarity — catches typos and close variants
+        if difflib.SequenceMatcher(None, h, c).ratio() >= 0.75:
+            return True
+    return False
 
 
 def _pass(label: str, message: str, detail: Optional[str]) -> CheckResult:
