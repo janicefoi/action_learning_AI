@@ -22,19 +22,20 @@ class ComplianceReport(BaseModel):
     headings: CheckResult
 
 
-# ── Phase 2: scoring schemas ──────────────────────────────────────────────────
+# ── Phase 3: scoring schemas ──────────────────────────────────────────────────
 
-class SectionScore(BaseModel):
-    section: str
-    present: bool
-    wordCount: int
-    score: float        # 0.0 – 1.0 (placeholder in Phase 2, rubric-based in Phase 3)
+class CriterionScore(BaseModel):
+    label: str
+    score: float            # 0.0 – 1.0
     feedback: str
+    confidence: str         # "low" | "medium" | "high"
+    requiresReview: bool
 
 
 class ScoreReport(BaseModel):
     overallScore: float
-    level: str          # "excellent" | "good" | "average" | "poor"
+    level: str              # "excellent" | "good" | "average" | "poor"
     wordCount: int
-    sections: List[SectionScore]
     embeddingsComputed: bool
+    requiresHumanReview: bool
+    criteria: List[CriterionScore]

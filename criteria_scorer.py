@@ -88,59 +88,192 @@ def _feedback(criterion: str, score: float) -> str:
 
 # ── criterion scorers ─────────────────────────────────────────────────────────
 
-def score_analytical_depth(doc: CleanDocument) -> CriterionScore:
-    """How deeply does the student analyse the problem? Prefers Problem + Reflection; falls back to full text."""
-    problem = _get_text(doc, "Problem")
-    reflection = _get_text(doc, "Reflection")
-    text = f"{problem} {reflection}".strip() if problem != reflection else problem
-    wc = len(text.split())
-    sim = _ref_sim(text, "analytical_depth")
+def _analytical_depth_feedback(score: float) -> str:
+    """
+    Four-band own scale for analytical depth.
 
-    causal_kw = [
+      0.60+     → Analytical   — rich causal reasoning, multi-dimensional analysis
+      0.40-0.59 → Developing   — some analysis; needs more causal depth
+      0.20-0.39 → Descriptive  — events narrated rather than analysed
+      0.00-0.19 → Minimal      — no analytical content detected
+    """
+    if score >= 0.60:
+        return (
+            "Strong analytical depth — clear causal reasoning and multi-dimensional "
+            "problem analysis are evident throughout."
+        )
+    if score >= 0.40:
+        return (
+            "Developing analytical depth — some causal reasoning is present, but the "
+            "analysis could go deeper. Identify root causes and examine the problem "
+            "from multiple perspectives."
+        )
+    if score >= 0.20:
+        return (
+            "Mostly descriptive — events are narrated rather than analysed. "
+            "Explain WHY the problem occurred, not just WHAT happened. "
+            "Use language such as: 'because', 'the root cause was', 'as a result'."
+        )
+    return (
+        "No analytical content detected. Shift from describing events to examining "
+        "their causes, underlying dynamics, and implications. "
+        "A strong reflection explains WHY things happened, not just WHAT."
+    )
+
+
+def score_analytical_depth(doc: CleanDocument) -> CriterionScore:
+    """
+    Analytical depth scorer — four-band own scale.
+
+    Distinguishes reflections that ANALYSE (identify root causes, reason
+    causally, examine from multiple angles) from those that merely DESCRIBE
+    (narrate events without explaining why they occurred).
+
+    Components:
+      40% — semantic similarity to analytical rubric reference sentences
+      40% — causal density: raw count of causal connectives; 5+ hits = full marks
+      20% — high-signal analytical vocabulary bonus
+
+    The Problem section is weighted twice because root-cause analysis lives
+    there; the Reflection section is included once.
+    """
+    problem_raw = doc.sections.get("Problem", "").strip()
+    reflection_raw = doc.sections.get("Reflection", "").strip()
+
+    if problem_raw or reflection_raw:
+        # Problem double-weighted — root-cause analysis lives there
+        combined = " ".join(filter(None, [problem_raw, problem_raw, reflection_raw]))
+    else:
+        combined = doc.full_text
+
+    lower = combined.lower()
+    wc = len(combined.split()) if combined.strip() else 0
+
+    # Component 1: semantic similarity to analytical rubric sentences (40%)
+    ref_sim = _ref_sim(combined, "analytical_depth") if combined.strip() else 0.0
+
+    # Component 2: causal density — actual occurrence count (not just presence);
+    # 5+ causal connectives across the text = full marks on this component (40%)
+    causal_connectives = [
         "because", "therefore", "as a result", "root cause", "due to",
-        "consequently", "caused", "led to", "stemmed from", "underlying",
-        "resulted in", "factor", "reason",
+        "consequently", "led to", "stemmed from", "underlying", "resulted in",
+        "caused by", "attributed to", "hence", "thus", "the reason",
+        "driven by", "explains why", "which means", "a consequence of",
+        "this is why", "which caused",
     ]
-    score = min(1.0, max(0.0, sim + _lexical_bonus(text, causal_kw, 0.12)))
+    causal_hits = sum(lower.count(kw) for kw in causal_connectives)
+    causal_density = min(1.0, causal_hits / 5.0)
+
+    # Component 3: high-signal depth vocabulary bonus (20%)
+    depth_markers = [
+        "root cause", "underlying", "systemic", "structural", "multiple factors",
+        "interconnected", "assumption", "from multiple", "multi-dimensional",
+        "compounded", "evidence", "demonstrates", "reveals that", "suggests that",
+        "indicates that", "on closer examination", "beyond the surface",
+        "deeper analysis", "critical factor", "at its core",
+    ]
+    depth_bonus = _lexical_bonus(lower, depth_markers, 0.20)
+
+    score = min(1.0, max(0.0, 0.40 * ref_sim + 0.40 * causal_density + depth_bonus))
     conf = _confidence(score, wc)
+
     return CriterionScore(
         label="Analytical Depth",
         score=round(score, 3),
-        feedback=_feedback("analytical_depth", score),
+        feedback=_analytical_depth_feedback(score),
         confidence=conf,
         requiresReview=(conf == "low"),
     )
 
 
+def _outcome_linkage_feedback(score: float) -> str:
+    """
+    Four-band own scale for outcome linkage.
+
+      0.65+     → Linked   — clear action-outcome connections with explicit attribution
+      0.45-0.64 → Partial  — some connections made but not fully explicit
+      0.25-0.44 → Implied  — outcomes mentioned but not linked to specific actions
+      0.00-0.24 → Absent   — no connection between actions and results detected
+    """
+    if score >= 0.65:
+        return (
+            "Clear outcome linkage — the reflection explicitly connects actions to "
+            "their results with measurable or observable evidence."
+        )
+    if score >= 0.45:
+        return (
+            "Partial outcome linkage — some connections between actions and results "
+            "are made. Strengthen these by stating specifically what changed as a "
+            "direct result of each action taken."
+        )
+    if score >= 0.25:
+        return (
+            "Outcomes are implied but not explicitly linked to actions. State clearly: "
+            "'Because I did X, Y happened.' Include observable or measurable evidence "
+            "of the change produced."
+        )
+    return (
+        "No clear connection between actions and results. Explicitly state what "
+        "changed as a result of the actions taken, and why those outcomes occurred."
+    )
+
+
 def score_outcome_linkage(doc: CleanDocument) -> CriterionScore:
-    """Does the student explicitly link actions to outcomes? Prefers Action + Reflection; falls back to full text."""
-    action = _get_text(doc, "Action")
-    reflection = _get_text(doc, "Reflection")
-    combined = f"{action} {reflection}".strip() if action != reflection else action
-    wc = len(combined.split())
+    """
+    Outcome linkage scorer — four-band own scale.
 
-    ref_sim = _ref_sim(combined, "outcome_linkage")
+    Does the student explicitly connect what they DID (Action) to what
+    RESULTED (Reflection)? Rewards explicit causal attribution, measurable
+    outcomes, and direct action-result phrasing.
 
-    # Cross-section semantic similarity — action and reflection should be related
-    cross_sim = 0.0
-    raw_action = doc.sections.get("Action", "").strip()
-    raw_reflection = doc.sections.get("Reflection", "").strip()
-    if raw_action and raw_reflection:
-        a_emb = embed([raw_action])[0]
-        r_emb = embed([raw_reflection])[0]
-        cross_sim = max(0.0, float(util.cos_sim(a_emb, r_emb)[0][0].item()))
+    Components:
+      35% — semantic similarity to outcome-linkage rubric reference sentences
+      45% — bridge-phrase density: actual occurrence count; 3+ hits = full marks
+      20% — outcome evidence vocabulary bonus
+    """
+    action_raw = doc.sections.get("Action", "").strip()
+    reflection_raw = doc.sections.get("Reflection", "").strip()
 
-    outcome_kw = [
-        "result", "led to", "caused", "impact", "improved", "achieved",
-        "outcome", "consequence", "effect", "produced", "because of",
+    if action_raw or reflection_raw:
+        combined = " ".join(filter(None, [action_raw, reflection_raw]))
+    else:
+        combined = doc.full_text
+
+    lower = combined.lower()
+    wc = len(combined.split()) if combined.strip() else 0
+
+    # Component 1: semantic similarity to outcome-linkage rubric sentences (35%)
+    ref_sim = _ref_sim(combined, "outcome_linkage") if combined.strip() else 0.0
+
+    # Component 2: bridge-phrase density — phrases that explicitly connect an action
+    # to an outcome; 3+ occurrences = full marks on this component (45%)
+    bridge_phrases = [
+        "as a result", "led to", "resulted in", "consequently", "therefore",
+        "the outcome was", "the result was", "this caused", "which meant",
+        "because of this", "this produced", "the impact was",
+        "following this", "after which", "thanks to", "by doing this",
+        "this led", "which led", "this change", "this meant",
+        "the effect was", "measurably improved", "worked because",
     ]
-    bonus = _lexical_bonus(combined, outcome_kw, 0.10)
-    score = min(1.0, max(0.0, 0.55 * ref_sim + 0.35 * cross_sim + bonus))
+    bridge_hits = sum(lower.count(bp) for bp in bridge_phrases)
+    bridge_density = min(1.0, bridge_hits / 3.0)
+
+    # Component 3: outcome evidence vocabulary bonus (20%)
+    outcome_markers = [
+        "measurable", "evidence", "improved", "increased", "decreased",
+        "reduced", "achieved", "delivered", "observed", "confirmed",
+        "data", "feedback", "survey", "metric", "concrete",
+        "visible", "demonstrated", "tangible", "dropped", "quantified",
+    ]
+    outcome_bonus = _lexical_bonus(lower, outcome_markers, 0.20)
+
+    score = min(1.0, max(0.0, 0.35 * ref_sim + 0.45 * bridge_density + outcome_bonus))
     conf = _confidence(score, wc)
+
     return CriterionScore(
         label="Outcome Linkage",
         score=round(score, 3),
-        feedback=_feedback("outcome_linkage", score),
+        feedback=_outcome_linkage_feedback(score),
         confidence=conf,
         requiresReview=(conf == "low"),
     )
