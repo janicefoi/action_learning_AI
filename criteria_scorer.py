@@ -121,21 +121,22 @@ def score_outcome_linkage(doc: CleanDocument) -> CriterionScore:
 
     ref_sim = _ref_sim(combined, "outcome_linkage")
 
-    # Cross-section semantic similarity — action and reflection should be related
-    cross_sim = 0.0
-    raw_action = doc.sections.get("Action", "").strip()
-    raw_reflection = doc.sections.get("Reflection", "").strip()
-    if raw_action and raw_reflection:
-        a_emb = embed([raw_action])[0]
-        r_emb = embed([raw_reflection])[0]
-        cross_sim = max(0.0, float(util.cos_sim(a_emb, r_emb)[0][0].item()))
+    # Causal-bridge bonus: reward explicit causal language (not raw topical overlap,
+    # which falsely rewards vague sections that are both about the same topic).
+    causal_bridge_kw = [
+        "as a result", "led to", "because of this", "this caused", "which meant",
+        "consequently", "therefore", "the outcome was", "this resulted in",
+        "the impact was", "directly improved", "this produced",
+    ]
+    bridge_bonus = _lexical_bonus(combined, causal_bridge_kw, 0.15)
 
     outcome_kw = [
-        "result", "led to", "caused", "impact", "improved", "achieved",
-        "outcome", "consequence", "effect", "produced", "because of",
+        "result", "impact", "improved", "achieved", "outcome",
+        "consequence", "effect", "produced", "measurable", "evidence",
     ]
-    bonus = _lexical_bonus(combined, outcome_kw, 0.10)
-    score = min(1.0, max(0.0, 0.55 * ref_sim + 0.35 * cross_sim + bonus))
+    bonus = _lexical_bonus(combined, outcome_kw, 0.08)
+
+    score = min(1.0, max(0.0, ref_sim + bridge_bonus + bonus))
     conf = _confidence(score, wc)
     return CriterionScore(
         label="Outcome Linkage",
