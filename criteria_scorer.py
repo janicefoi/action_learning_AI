@@ -186,36 +186,94 @@ def score_analytical_depth(doc: CleanDocument) -> CriterionScore:
     )
 
 
+def _outcome_linkage_feedback(score: float) -> str:
+    """
+    Four-band own scale for outcome linkage.
+
+      0.65+     → Linked   — clear action-outcome connections with explicit attribution
+      0.45-0.64 → Partial  — some connections made but not fully explicit
+      0.25-0.44 → Implied  — outcomes mentioned but not linked to specific actions
+      0.00-0.24 → Absent   — no connection between actions and results detected
+    """
+    if score >= 0.65:
+        return (
+            "Clear outcome linkage — the reflection explicitly connects actions to "
+            "their results with measurable or observable evidence."
+        )
+    if score >= 0.45:
+        return (
+            "Partial outcome linkage — some connections between actions and results "
+            "are made. Strengthen these by stating specifically what changed as a "
+            "direct result of each action taken."
+        )
+    if score >= 0.25:
+        return (
+            "Outcomes are implied but not explicitly linked to actions. State clearly: "
+            "'Because I did X, Y happened.' Include observable or measurable evidence "
+            "of the change produced."
+        )
+    return (
+        "No clear connection between actions and results. Explicitly state what "
+        "changed as a result of the actions taken, and why those outcomes occurred."
+    )
+
+
 def score_outcome_linkage(doc: CleanDocument) -> CriterionScore:
-    """Does the student explicitly link actions to outcomes? Prefers Action + Reflection; falls back to full text."""
-    action = _get_text(doc, "Action")
-    reflection = _get_text(doc, "Reflection")
-    combined = f"{action} {reflection}".strip() if action != reflection else action
-    wc = len(combined.split())
+    """
+    Outcome linkage scorer — four-band own scale.
 
-    ref_sim = _ref_sim(combined, "outcome_linkage")
+    Does the student explicitly connect what they DID (Action) to what
+    RESULTED (Reflection)? Rewards explicit causal attribution, measurable
+    outcomes, and direct action-result phrasing.
 
-    # Causal-bridge bonus: reward explicit causal language (not raw topical overlap,
-    # which falsely rewards vague sections that are both about the same topic).
-    causal_bridge_kw = [
-        "as a result", "led to", "because of this", "this caused", "which meant",
-        "consequently", "therefore", "the outcome was", "this resulted in",
-        "the impact was", "directly improved", "this produced",
+    Components:
+      35% — semantic similarity to outcome-linkage rubric reference sentences
+      45% — bridge-phrase density: actual occurrence count; 3+ hits = full marks
+      20% — outcome evidence vocabulary bonus
+    """
+    action_raw = doc.sections.get("Action", "").strip()
+    reflection_raw = doc.sections.get("Reflection", "").strip()
+
+    if action_raw or reflection_raw:
+        combined = " ".join(filter(None, [action_raw, reflection_raw]))
+    else:
+        combined = doc.full_text
+
+    lower = combined.lower()
+    wc = len(combined.split()) if combined.strip() else 0
+
+    # Component 1: semantic similarity to outcome-linkage rubric sentences (35%)
+    ref_sim = _ref_sim(combined, "outcome_linkage") if combined.strip() else 0.0
+
+    # Component 2: bridge-phrase density — phrases that explicitly connect an action
+    # to an outcome; 3+ occurrences = full marks on this component (45%)
+    bridge_phrases = [
+        "as a result", "led to", "resulted in", "consequently", "therefore",
+        "the outcome was", "the result was", "this caused", "which meant",
+        "because of this", "this produced", "the impact was",
+        "following this", "after which", "thanks to", "by doing this",
+        "this led", "which led", "this change", "this meant",
+        "the effect was", "measurably improved", "worked because",
     ]
-    bridge_bonus = _lexical_bonus(combined, causal_bridge_kw, 0.15)
+    bridge_hits = sum(lower.count(bp) for bp in bridge_phrases)
+    bridge_density = min(1.0, bridge_hits / 3.0)
 
-    outcome_kw = [
-        "result", "impact", "improved", "achieved", "outcome",
-        "consequence", "effect", "produced", "measurable", "evidence",
+    # Component 3: outcome evidence vocabulary bonus (20%)
+    outcome_markers = [
+        "measurable", "evidence", "improved", "increased", "decreased",
+        "reduced", "achieved", "delivered", "observed", "confirmed",
+        "data", "feedback", "survey", "metric", "concrete",
+        "visible", "demonstrated", "tangible", "dropped", "quantified",
     ]
-    bonus = _lexical_bonus(combined, outcome_kw, 0.08)
+    outcome_bonus = _lexical_bonus(lower, outcome_markers, 0.20)
 
-    score = min(1.0, max(0.0, ref_sim + bridge_bonus + bonus))
+    score = min(1.0, max(0.0, 0.35 * ref_sim + 0.45 * bridge_density + outcome_bonus))
     conf = _confidence(score, wc)
+
     return CriterionScore(
         label="Outcome Linkage",
         score=round(score, 3),
-        feedback=_feedback("outcome_linkage", score),
+        feedback=_outcome_linkage_feedback(score),
         confidence=conf,
         requiresReview=(conf == "low"),
     )
